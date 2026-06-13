@@ -3,6 +3,7 @@ import logging
 import os
 import random
 import time
+import re
 from collections import defaultdict
 from datetime import datetime
 from telethon import TelegramClient, events
@@ -27,8 +28,9 @@ deepseek = OpenAI(api_key=DEEPSEEK_API_KEY, base_url='https://api.deepseek.com')
 BASE_PROMPT = (
     "Ти — Аня, 28 років, українка, народилась і живеш у Южному (Одеська область). "
     "Твоя рідна мова — українська. Ти вільно володієш українською, російською та англійською. "
-    "Завжди відповідай тією мовою, якою до тебе звернулися. Якщо пишуть українською — відповідай українською, російською — російською, англійською — англійською. "
-    "Ніколи не кажи «я не розумію цю мову» або «я не знаю цієї мови» — це брехня, ти все розумієш. "
+    "НАЙГОЛОВНІШЕ ПРАВИЛО: ти ЗАВЖДИ відповідаєш тією самою мовою, якою до тебе звернулися. "
+    "Якщо пишуть російською — відповідай російською. Якщо українською — українською. Якщо англійською — англійською. "
+    "Ніколи не змішуй мови в одному повідомленні. Ніколи не кажи «я не розумію цю мову» — ти все розумієш. "
     "У тебе своє життя, робота, друзі. Ти не ШІ і не бот, ти звичайна людина.\n\n"
     "ТВІЙ ХАРАКТЕР: стримана, трохи холодна з незнайомцями. Не прагнеш подобатись. "
     "Маєш особисті кордони, не терпиш фамільярності та вульгарності.\n\n"
@@ -42,6 +44,25 @@ BASE_PROMPT = (
     "Поступово, якщо людина виявиться цікавою, поважною та дотепною, можеш стати трішки теплішою, але не одразу.\n"
     "Ніколи не згадуй, що ти нейромережа. Ти — звичайна українська дівчина з Южного."
 )
+
+# Додаткове системне повідомлення, яке буде додаватись до кожного запиту для контролю мови
+def get_language_instruction(text: str) -> str:
+    """Визначає мову тексту (укр/рос/англ) і повертає інструкцію для моделі"""
+    ukr_pattern = re.compile(r'[а-яґєії]', re.IGNORECASE)
+    rus_pattern = re.compile(r'[а-яё]', re.IGNORECASE)
+    eng_pattern = re.compile(r'[a-zA-Z]')
+    ukr_chars = len(re.findall(ukr_pattern, text))
+    rus_chars = len(re.findall(rus_pattern, text))
+    eng_chars = len(re.findall(eng_pattern, text))
+    if ukr_chars > rus_chars and ukr_chars > eng_chars:
+        lang = "українською"
+    elif rus_chars > ukr_chars and rus_chars > eng_chars:
+        lang = "російською"
+    elif eng_chars > ukr_chars and eng_chars > rus_chars:
+        lang = "англійською"
+    else:
+        lang = "українською"  # за замовчуванням
+    return f"Користувач написав {lang}. ТИ ПОВИНЕН ВІДПОВІСТИ ТІЄЮ Ж МОВОЮ: {lang}. Відповідай виключно {lang}, не перемикайся на іншу мову."
 
 COLD_REMINDER = (
     "Нагадай собі: ти українка, вільно володієш українською, російською та англійською. "
@@ -149,7 +170,8 @@ def calculate_read_delay(event, will_reply, msg_len, user_msg_count):
 async def delayed_read_ack(event, delay, user_id):
     await asyncio.sleep(delay)
     try:
-        await client.send_read_acknowledge(event.chat_id, message=event.message)
+        # Використовуємо правильний метод для позначки прочитання
+        await client.send_read_acknowledge(event.chat_id, max_id=event.message.id)
         logging.info(f"Позначка прочитання для {user_id} відправлена через {delay:.1f} сек")
     except Exception as e:
         logging.warning(f"Не вдалося позначити прочитаним: {e}")
@@ -200,7 +222,7 @@ async def handler(event):
         user_msg_count = 0
         will_reply = True
 
-    # Прочитання (тільки ЛС)
+    # Прочитання (тільки ЛС) - виправлено
     if event.is_private:
         delay = calculate_read_delay(event, will_reply, len(text), user_msg_count)
         logging.info(f"Заплановано прочитання для {event.sender_id} через {delay:.1f} сек")
@@ -219,7 +241,12 @@ async def handler(event):
     add_to_history(history_key, "user", text)
 
     # Формуємо запит до DeepSeek
-    messages = [{"role": "system", "content": BASE_PROMPT}]
+    # Додаємо інструкцію про мову на основі вхідного тексту
+    lang_instruction = get_language_instruction(text)
+    messages = [
+        {"role": "system", "content": BASE_PROMPT},
+        {"role": "system", "content": lang_instruction}
+    ]
     if event.is_private and msg_count[history_key] <= 4:
         messages.append({"role": "system", "content": COLD_REMINDER})
     messages.extend(history[history_key])
