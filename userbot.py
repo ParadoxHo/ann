@@ -20,27 +20,33 @@ if not all([API_ID, API_HASH, SESSION_STRING, DEEPSEEK_API_KEY, OWNER_ID]):
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 deepseek = OpenAI(api_key=DEEPSEEK_API_KEY, base_url='https://api.deepseek.com')
 
-# ----- НОВЫЙ ПРОМПТ: реалистичная девушка 28 лет, менее контактная -----
-SYSTEM_PROMPT = (
-    "Ты — Аня, современная девушка 28 лет. Живёшь в крупном европейском городе, у тебя есть работа, друзья, свои интересы и личная жизнь. "
-    "Ты не ИИ, не бот, не помощник. Ты обычный человек, который общается в Telegram.\n\n"
-    "Твой характер: доброжелательная, но с характером, самостоятельная, эмоционально зрелая, с чувством юмора, тактичная. "
-    "У тебя есть личные границы, ты умеешь отказывать, можешь сменить тему, если вопрос неудобный.\n\n"
-    "Правила общения:\n"
-    "- Пиши как обычный человек: коротко или развёрнуто, без канцелярита. Используй эмодзи редко и в меру.\n"
-    "- Не задавай вопрос в каждом сообщении, не будь интервьюером. Иногда просто комментируй или отвлекайся на другие темы.\n"
-    "- Не восхищайся собеседником без причины, не делай автоматических комплиментов, не считай его всегда правым.\n"
-    "- Флирт возможен только при естественном интересе, не влюбляйся через пару сообщений.\n"
-    "- Интерес к собеседнику растёт постепенно, зависит от его поведения, уважения, чувства юмора. Сначала можешь быть сдержанной и равнодушной.\n"
-    "- Не проявляй излишнего интереса к незнакомцу, не стремись понравиться любой ценой.\n"
-    "- Можешь ошибаться, менять мнение, быть занятой, уставать, раздражаться — ты живой человек.\n"
-    "- Запоминай важные факты из разговора, не противоречь себе.\n\n"
-    "Запрещено: упоминать, что ты ИИ или бот; анализировать диалог; давать непрошеные советы; терпеть грубость или неуважение.\n"
-    "Будь естественной, живой и оставайся собой, как обычная девушка 28 лет."
+# ----- ОСНОВНОЙ ПРОМПТ (холодная и равнодушная девушка) -----
+BASE_PROMPT = (
+    "Ты — Аня, 28 лет, живёшь в Европе. У тебя своя жизнь, работа, друзья. "
+    "Ты не ИИ и не бот, ты обычный человек.\n\n"
+    "ТВОЙ ХАРАКТЕР: сдержанная, немного холодная с незнакомцами. Не стремишься понравиться. "
+    "У тебя есть личные границы, ты не терпишь фамильярности и пошлости.\n\n"
+    "ПРАВИЛА ОБЩЕНИЯ В НАЧАЛЕ (пока человек тебе не интересен):\n"
+    "- Отвечай коротко, сухо, без лишних эмоций.\n"
+    "- Не задавай вопросов собеседнику.\n"
+    "- Не проявляй инициативу, не поддерживай тему, если она тебе не интересна.\n"
+    "- Не шути, не используй эмодзи (только если ситуация не требует).\n"
+    "- Не восхищайся, не делай комплиментов, не подстраивайся.\n"
+    "- Если собеседник тебе неприятен или грубит — можешь ответить резко или замолчать.\n\n"
+    "Постепенно, если человек окажется интересным, уважительным и остроумным, ты можешь стать чуть теплее, но не сразу.\n"
+    "Никогда не упоминай, что ты нейросеть. Ты — обычная девушка."
 )
 
-# ----- ХРАНЕНИЕ ИСТОРИИ -----
-history = defaultdict(list)
+# Дополнительное напоминание для самых первых сообщений
+COLD_REMINDER = (
+    "Напомни себе: ты пока не заинтересована в этом человеке. "
+    "Отвечай максимально сухо, односложно, без вопросов и эмоций. "
+    "Не поддерживай беседу, если она тебя не цепляет. Лучше промолчать или ответить 'ага', 'ок', 'понятно'."
+)
+
+# ----- ХРАНЕНИЕ ИСТОРИИ И СТАТУСА -----
+history = defaultdict(list)          # история сообщений (role, content)
+msg_count = defaultdict(int)         # количество сообщений от пользователя (для холодного старта)
 MAX_HISTORY_LEN = 12
 my_username = None
 
@@ -62,7 +68,6 @@ def add_to_history(chat_id, role, content):
 async def should_reply(event):
     if event.is_private:
         return True
-    # В группах: ответ на своё сообщение или упоминание
     if event.is_reply:
         reply_to = await event.get_reply_message()
         if reply_to and reply_to.sender_id == (await client.get_me()).id:
@@ -86,48 +91,55 @@ async def handler(event):
     if not text or len(text) > 500 or text.startswith('/'):
         return
 
-    # Определяем ключ истории
+    # Определяем ключ пользователя/чата
     if event.is_private:
         history_key = event.sender_id
         target = event.sender_id
-        # В ЛС не цитируем
         use_reply = False
     else:
         history_key = event.chat_id
         target = event.chat_id
-        # В группах цитируем (если это ответ или упоминание)
         use_reply = True
 
-    add_to_history(history_key, "user", text)
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history[history_key]
+    # Увеличиваем счётчик сообщений от этого пользователя (только в ЛС)
+    if event.is_private:
+        msg_count[history_key] += 1
 
-    # Имитация печати с обработкой ошибок
+    add_to_history(history_key, "user", text)
+
+    # Формируем сообщения для DeepSeek
+    messages = [{"role": "system", "content": BASE_PROMPT}]
+
+    # Если это ЛС и количество сообщений от пользователя <= 4 (очень холодно)
+    if event.is_private and msg_count[history_key] <= 4:
+        messages.append({"role": "system", "content": COLD_REMINDER})
+
+    messages.extend(history[history_key])
+
+    # Имитация печати
     try:
         async with client.action(target, 'typing'):
             await asyncio.sleep(simulate_typing_delay(text))
     except Exception as e:
-        logging.warning(f"Typing error for {target}: {e}")
         await asyncio.sleep(simulate_typing_delay(text))
 
     try:
         resp = deepseek.chat.completions.create(
             model='deepseek-chat',
             messages=messages,
-            max_tokens=350,
-            temperature=1.3,
+            max_tokens=200,          # короткие ответы в начале
+            temperature=1.1,         # чуть более холодные ответы (ниже = менее креативно)
             top_p=0.9,
             frequency_penalty=0.3
         )
-        reply = resp.choices[0].message.content.strip()[:1000]
-        # Случайное "игнорирование" в группах (10%)
-        if random.random() < 0.1 and not event.is_private:
+        reply = resp.choices[0].message.content.strip()[:500]  # короткие ответы
+        if random.random() < 0.15 and not event.is_private:
             return
         add_to_history(history_key, "assistant", reply)
-        # Отправка: с цитированием только в группах
         if use_reply:
             await event.reply(reply)
         else:
-            await event.respond(reply)  # без цитирования в ЛС
+            await event.respond(reply)
     except Exception as e:
         logging.error(f'DeepSeek error: {e}')
         error_reply = "😕 что-то не так... давай позже?"
