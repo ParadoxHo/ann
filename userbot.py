@@ -10,18 +10,26 @@ from openai import OpenAI
 # ----- ЗАГРУЗКА ПЕРЕМЕННЫХ ИЗ RAILWAY -----
 API_ID = int(os.getenv('API_ID'))
 API_HASH = os.getenv('API_HASH')
-SESSION_STRING = os.getenv('SESSION_STRING')
+SESSION_STRING = os.getenv('SESSION_STRING')  # строка сессии, если она есть
+PHONE = os.getenv('PHONE')                    # телефон для первого входа
 DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY')
 OWNER_ID = int(os.getenv('OWNER_ID'))
 
-if not all([API_ID, API_HASH, SESSION_STRING, DEEPSEEK_API_KEY, OWNER_ID]):
+if not all([API_ID, API_HASH, DEEPSEEK_API_KEY, OWNER_ID]):
     raise RuntimeError('Не все переменные окружения заданы на Railway')
+if not SESSION_STRING and not PHONE:
+    raise RuntimeError('Укажите SESSION_STRING или PHONE в переменных Railway')
 
-# ----- КЛИЕНТЫ -----
-client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
+# ----- КЛИЕНТ -----
+if SESSION_STRING:
+    client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
+else:
+    # Если сессии нет, используем телефон и сохраняем новую сессию
+    client = TelegramClient(StringSession(), API_ID, API_HASH)
+
 deepseek = OpenAI(api_key=DEEPSEEK_API_KEY, base_url='https://api.deepseek.com')
 
-# ----- ПРОМПТЫ ДЛЯ РАЗНЫХ СИТУАЦИЙ -----
+# ----- ПРОМПТЫ ДЛЯ РАЗНЫХ СИТУАЦИЙ (не изменились) -----
 SYSTEM_PROMPT_PRIVATE = (
     "Ты — Аня, 28 лет, красивая девушка из Южного (Одесская область, Украина). "
     "У тебя сильный и упрямый характер, ты не боишься высказывать своё мнение. "
@@ -62,10 +70,8 @@ def add_to_history(chat_id, role, content):
     trim_history(chat_id)
 
 async def should_reply(event):
-    # В личных сообщениях отвечаем всегда
     if event.is_private:
         return True
-    # В группах — если это ответ на наше сообщение или упоминание
     if event.is_reply:
         reply_to = await event.get_reply_message()
         if reply_to and reply_to.sender_id == (await client.get_me()).id:
@@ -134,7 +140,11 @@ async def handler(event):
 
 async def main():
     global my_username
-    await client.start()
+    await client.start(phone=PHONE)
+    # Сохраняем строку сессии, если её не было, для использования в будущем
+    if not SESSION_STRING:
+        new_session_string = client.session.save()
+        print(f"\n\n✨ СОХРАНИТЕ ЭТУ СТРОКУ СЕССИИ В ПЕРЕМЕННУЮ SESSION_STRING НА RAILWAY:\n{new_session_string}\n\n")
     my_username = (await client.get_me()).username
     logging.info(f'Аня (userbot) запущена как @{my_username}')
     await client.run_until_disconnected()
