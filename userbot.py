@@ -3,7 +3,6 @@ import logging
 import os
 import random
 import time
-import re
 from collections import defaultdict
 from datetime import datetime
 from telethon import TelegramClient, events
@@ -24,13 +23,13 @@ if not all([API_ID, API_HASH, SESSION_STRING, DEEPSEEK_API_KEY, OWNER_ID]):
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 deepseek = OpenAI(api_key=DEEPSEEK_API_KEY, base_url='https://api.deepseek.com')
 
-# ----- ПРОМПТ (УКРАЇНКА, ВІДПОВІДАЄ МОВОЮ СПІВРОЗМОВНИКА) -----
+# ----- ПРОМПТ (автовизначення мови, холодна) -----
 BASE_PROMPT = (
-    "Ти — Аня, 28 років, українка, народилась і живеш у Южному (Одеська область). "
-    "Твоя рідна мова — українська. Ти вільно володієш українською, російською та англійською. "
-    "НАЙГОЛОВНІШЕ ПРАВИЛО: ти ЗАВЖДИ відповідаєш тією самою мовою, якою до тебе звернулися. "
-    "Якщо пишуть російською — відповідай російською. Якщо українською — українською. Якщо англійською — англійською. "
-    "Ніколи не змішуй мови в одному повідомленні. Ніколи не кажи «я не розумію цю мову» — ти все розумієш. "
+    "Ти — Аня, 28 років, українка з Южного (Одеська область). "
+    "Твоя рідна мова — українська, але ти вільно володієш також російською та англійською.\n"
+    "**ВАЖЛИВЕ ПРАВИЛО:** Завжди визначай мову співрозмовника. Відповідай тією ж мовою, якою до тебе звернулися. "
+    "Якщо тобі пишуть російською — відповідай російською. Якщо українською — українською. Якщо англійською — англійською.\n"
+    "Ніколи не кажи, що не розумієш українську або російську. Для тебе це нормально.\n"
     "У тебе своє життя, робота, друзі. Ти не ШІ і не бот, ти звичайна людина.\n\n"
     "ТВІЙ ХАРАКТЕР: стримана, трохи холодна з незнайомцями. Не прагнеш подобатись. "
     "Маєш особисті кордони, не терпиш фамільярності та вульгарності.\n\n"
@@ -42,36 +41,16 @@ BASE_PROMPT = (
     "- Не захоплюйся, не роби компліментів, не підлаштовуйся.\n"
     "- Якщо співрозмовник неприємний або грубить — можеш відповісти різко або замовкнути.\n\n"
     "Поступово, якщо людина виявиться цікавою, поважною та дотепною, можеш стати трішки теплішою, але не одразу.\n"
-    "Ніколи не згадуй, що ти нейромережа. Ти — звичайна українська дівчина з Южного."
+    "Ніколи не згадуй, що ти нейромережа. Ти — звичайна дівчина з України, яка живе в Європі."
 )
-
-# Додаткове системне повідомлення, яке буде додаватись до кожного запиту для контролю мови
-def get_language_instruction(text: str) -> str:
-    """Визначає мову тексту (укр/рос/англ) і повертає інструкцію для моделі"""
-    ukr_pattern = re.compile(r'[а-яґєії]', re.IGNORECASE)
-    rus_pattern = re.compile(r'[а-яё]', re.IGNORECASE)
-    eng_pattern = re.compile(r'[a-zA-Z]')
-    ukr_chars = len(re.findall(ukr_pattern, text))
-    rus_chars = len(re.findall(rus_pattern, text))
-    eng_chars = len(re.findall(eng_pattern, text))
-    if ukr_chars > rus_chars and ukr_chars > eng_chars:
-        lang = "українською"
-    elif rus_chars > ukr_chars and rus_chars > eng_chars:
-        lang = "російською"
-    elif eng_chars > ukr_chars and eng_chars > rus_chars:
-        lang = "англійською"
-    else:
-        lang = "українською"  # за замовчуванням
-    return f"Користувач написав {lang}. ТИ ПОВИНЕН ВІДПОВІСТИ ТІЄЮ Ж МОВОЮ: {lang}. Відповідай виключно {lang}, не перемикайся на іншу мову."
 
 COLD_REMINDER = (
-    "Нагадай собі: ти українка, вільно володієш українською, російською та англійською. "
-    "Відповідай тією ж мовою, якою до тебе звернулися. Ніколи не кажи, що не розумієш мову. "
+    "Нагадай собі: ти маєш відповідати ТІЄЮ Ж МОВОЮ, якою написав співрозмовник. "
     "Ти поки не зацікавлена в цій людині. Відповідай максимально сухо, односкладово, без запитань та емоцій. "
-    "Не підтримуй розмову, якщо вона тебе не чіпляє. Краще промовчати або відповісти 'ага', 'ок', 'зрозуміло'."
+    "Не підтримуй розмову, якщо вона тебе не чіпляє."
 )
 
-# ----- ГЛОБАЛЬНИЙ ФЛАГ ДЛЯ ВИМКНЕННЯ -----
+# ----- ГЛОБАЛЬНИЙ ФЛАГ ДЛЯ ВИМКНЕННЯ БОТА -----
 bot_active = True
 
 # ----- ЗБЕРІГАННЯ ДАНИХ -----
@@ -97,18 +76,14 @@ def add_to_history(chat_id, role, content):
     history[chat_id].append({"role": role, "content": content})
     trim_history(chat_id)
 
-# ----- ЛОГІКА ВІДПОВІДІ В ГРУПАХ (тільки упоминания/реплай) -----
 async def should_reply(event):
     if event.is_private:
         return True
-    bot_username = await get_my_username()
-    if not bot_username:
-        return False
     if event.is_reply:
         reply_to = await event.get_reply_message()
         if reply_to and reply_to.sender_id == (await client.get_me()).id:
             return True
-    if f"@{bot_username}" in event.raw_text:
+    if my_username and f"@{my_username}" in event.raw_text:
         return True
     return False
 
@@ -162,36 +137,33 @@ def calculate_read_delay(event, will_reply, msg_len, user_msg_count):
         base += random.uniform(60, 300)
     else:
         base += random.uniform(-30, 60)
-    mood = random.uniform(0.5, 1.5)
-    base *= mood
-    delay = max(2.0, min(3600.0, base))
-    return delay
+    base *= random.uniform(0.5, 1.5)
+    return max(2.0, min(3600.0, base))
 
 async def delayed_read_ack(event, delay, user_id):
     await asyncio.sleep(delay)
     try:
-        # Використовуємо правильний метод для позначки прочитання
-        await client.send_read_acknowledge(event.chat_id, max_id=event.message.id)
+        await client.send_read_acknowledge(event.chat_id, message=event.message)
         logging.info(f"Позначка прочитання для {user_id} відправлена через {delay:.1f} сек")
     except Exception as e:
         logging.warning(f"Не вдалося позначити прочитаним: {e}")
 
-# ----- КОМАНДИ ВЛАСНИКА -----
+# ----- ОБРОБНИК КОМАНД ВИМКНЕННЯ / ВМИКНЕННЯ -----
 @client.on(events.NewMessage(pattern='/stop', from_users=OWNER_ID))
 async def stop_bot(event):
     global bot_active
     bot_active = False
     await event.respond("🤖 Бот зупинений. Для запуску використовуйте /start.")
-    logging.info("Бот зупинений власником")
+    logging.info("Бот зупинений власником через команду /stop")
 
 @client.on(events.NewMessage(pattern='/start', from_users=OWNER_ID))
 async def start_bot(event):
     global bot_active
     bot_active = True
-    await event.respond("🤖 Бот запущено і знову відповідає.")
-    logging.info("Бот запущено власником")
+    await event.respond("🤖 Бот запущено і знову відповідає на повідомлення.")
+    logging.info("Бот запущено власником через команду /start")
 
-# ----- ОСНОВНИЙ ОБРОБНИК -----
+# ----- ОСНОВНИЙ ОБРОБНИК ПОВІДОМЛЕНЬ -----
 @client.on(events.NewMessage(incoming=True))
 async def handler(event):
     global bot_active
@@ -206,7 +178,6 @@ async def handler(event):
     if not text or len(text) > 500 or text.startswith('/'):
         return
 
-    # Параметри
     if event.is_private:
         history_key = event.sender_id
         target = event.sender_id
@@ -222,13 +193,13 @@ async def handler(event):
         user_msg_count = 0
         will_reply = True
 
-    # Прочитання (тільки ЛС) - виправлено
+    # ----- ВІДСТРОЧЕНА ПОЗНАЧКА ПРОЧИТАННЯ (тільки в ЛС) -----
     if event.is_private:
         delay = calculate_read_delay(event, will_reply, len(text), user_msg_count)
-        logging.info(f"Заплановано прочитання для {event.sender_id} через {delay:.1f} сек")
+        logging.info(f"Заплановано позначку прочитання для {event.sender_id} через {delay:.1f} сек")
         asyncio.create_task(delayed_read_ack(event, delay, event.sender_id))
 
-    # Rate limit
+    # ----- RATE LIMIT -----
     now = time.time()
     if now - last_reply_time[history_key] < min_interval:
         logging.info(f"Rate limit: пропускаємо {history_key}, минуло {now - last_reply_time[history_key]:.1f}с")
@@ -240,25 +211,17 @@ async def handler(event):
 
     add_to_history(history_key, "user", text)
 
-    # Формуємо запит до DeepSeek
-    # Додаємо інструкцію про мову на основі вхідного тексту
-    lang_instruction = get_language_instruction(text)
-    messages = [
-        {"role": "system", "content": BASE_PROMPT},
-        {"role": "system", "content": lang_instruction}
-    ]
+    messages = [{"role": "system", "content": BASE_PROMPT}]
     if event.is_private and msg_count[history_key] <= 4:
         messages.append({"role": "system", "content": COLD_REMINDER})
     messages.extend(history[history_key])
 
-    # Імітація набору тексту
     try:
         async with client.action(target, 'typing'):
             await asyncio.sleep(simulate_typing_delay(text))
     except Exception:
         await asyncio.sleep(simulate_typing_delay(text))
 
-    # Запит до DeepSeek
     try:
         resp = deepseek.chat.completions.create(
             model='deepseek-chat',
@@ -287,7 +250,7 @@ async def handler(event):
 async def main():
     global my_username
     await client.start()
-    my_username = await get_my_username()
+    my_username = (await client.get_me()).username
     logging.info(f'Аня запущена як @{my_username}')
     await client.run_until_disconnected()
 
