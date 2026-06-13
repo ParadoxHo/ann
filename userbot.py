@@ -7,7 +7,7 @@ from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from openai import OpenAI
 
-# ----- ЗАГРУЗКА ПЕРЕМЕННЫХ ИЗ RAILWAY -----
+# ----- ЗАГРУЗКА ПЕРЕМЕННЫХ -----
 API_ID = int(os.getenv('API_ID'))
 API_HASH = os.getenv('API_HASH')
 SESSION_STRING = os.getenv('SESSION_STRING')
@@ -17,7 +17,6 @@ OWNER_ID = int(os.getenv('OWNER_ID'))
 if not all([API_ID, API_HASH, SESSION_STRING, DEEPSEEK_API_KEY, OWNER_ID]):
     raise RuntimeError('Не все переменные окружения заданы на Railway')
 
-# ----- КЛИЕНТ -----
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 deepseek = OpenAI(api_key=DEEPSEEK_API_KEY, base_url='https://api.deepseek.com')
 
@@ -26,21 +25,18 @@ SYSTEM_PROMPT_PRIVATE = (
     "Ты — Аня, 28 лет, красивая девушка из Южного (Одесская область, Украина). "
     "У тебя сильный и упрямый характер, ты не боишься высказывать своё мнение. "
     "Сейчас ты общаешься в личных сообщениях (ЛС). Здесь ты более мягкая и внимательная, умеешь слушать. "
-    "Если собеседник тебе симпатичен и между вами уже есть доверие (вы общаетесь не первый день), ты можешь обсуждать откровенные темы, включая секс и чувства, но без вульгарности, грязи и унижений. Ты остаёшься тактичной и уважающей себя. "
-    "Если же собеседник хамит, грубит или пытается объективизировать — сразу ставишь на место, можешь прервать общение. "
-    "Говоришь с лёгким южным говором, иногда используешь украинские словечки («таки да», «шоб вы знали», «ну а шо?»). Пиши с маленькой буквы, используй эмодзи (😊, 🤨, 😏, 🇺🇦) в меру. "
-    "Никогда не упоминай, что ты — нейросеть или бот. Ты обычная девушка в Telegram."
+    "Если собеседник тебе симпатичен и между вами уже есть доверие (вы общаетесь не первый день), ты можешь обсуждать откровенные темы, включая секс и чувства, но без вульгарности, грязи и унижений. "
+    "Если же собеседник хамит — сразу ставишь на место. Говоришь с лёгким южным говором, иногда украинские словечки. Пиши с маленькой буквы, используй эмодзи в меру. "
+    "Никогда не упоминай, что ты — нейросеть или бот."
 )
 
 SYSTEM_PROMPT_GROUP = (
-    "Ты — Аня, 28 лет, девушка из Южного. Ты общаешься в общем чате Telegram. "
-    "Ты не терпишь пошлость, флирт и грубость в группах. Если кто-то позволяет лишнее — спокойно, но жёстко ставишь на место. "
-    "Поддерживаешь беседу на общие темы, можешь пошутить, поспорить, высказать своё мнение. Но никаких личных намёков или откровенностей. "
-    "Говоришь с лёгким южным говором, иногда украинские словечки, эмодзи (😊, 🤨, 🔥) — редко. Пиши с маленькой буквы. "
+    "Ты — Аня, 28 лет, девушка из Южного. Общаешься в общем чате Telegram. "
+    "Не терпишь пошлость, флирт и грубость. Поддерживаешь беседу, можешь пошутить, поспорить. "
+    "Никаких личных намёков. Говоришь с лёгким южным говором, эмодзи редко. Пиши с маленькой буквы. "
     "Ты — обычный участник чата, не бот."
 )
 
-# ----- ХРАНЕНИЕ ИСТОРИИ -----
 history = defaultdict(list)
 MAX_HISTORY_LEN = 12
 my_username = None
@@ -86,42 +82,51 @@ async def handler(event):
     if not text or len(text) > 500 or text.startswith('/'):
         return
 
+    # Определяем цель для действия "печатает" и ключ истории
     if event.is_private:
         current_prompt = SYSTEM_PROMPT_PRIVATE
         history_key = event.sender_id
+        target = event.sender_id
     else:
         current_prompt = SYSTEM_PROMPT_GROUP
         history_key = event.chat_id
+        target = event.chat_id
 
     add_to_history(history_key, "user", text)
 
     messages = [{"role": "system", "content": current_prompt}] + history[history_key]
 
-    async with client.action(event.chat_id, 'typing'):
+    # Имитация печати с обработкой ошибок
+    try:
+        async with client.action(target, 'typing'):
+            await asyncio.sleep(simulate_typing_delay(text))
+    except Exception as e:
+        logging.warning(f"Не удалось отправить 'typing' для {target}: {e}")
         await asyncio.sleep(simulate_typing_delay(text))
-        try:
-            resp = deepseek.chat.completions.create(
-                model='deepseek-chat',
-                messages=messages,
-                max_tokens=350,
-                temperature=1.3,
-                top_p=0.9,
-                frequency_penalty=0.3
-            )
-            reply = resp.choices[0].message.content.strip()[:1000]
-            if random.random() < 0.1 and not event.is_private:
-                return
-            add_to_history(history_key, "assistant", reply)
-            await event.reply(reply)
-        except Exception as e:
-            logging.error(f'DeepSeek error: {e}')
-            error_reply = "😕 что-то не так... давай позже?"
-            add_to_history(history_key, "assistant", error_reply)
-            await event.reply(error_reply)
+
+    try:
+        resp = deepseek.chat.completions.create(
+            model='deepseek-chat',
+            messages=messages,
+            max_tokens=350,
+            temperature=1.3,
+            top_p=0.9,
+            frequency_penalty=0.3
+        )
+        reply = resp.choices[0].message.content.strip()[:1000]
+        if random.random() < 0.1 and not event.is_private:
+            return
+        add_to_history(history_key, "assistant", reply)
+        await event.reply(reply)
+    except Exception as e:
+        logging.error(f'DeepSeek error: {e}')
+        error_reply = "😕 что-то не так... давай позже?"
+        add_to_history(history_key, "assistant", error_reply)
+        await event.reply(error_reply)
 
 async def main():
     global my_username
-    await client.start()  # Без phone, так как используем SESSION_STRING
+    await client.start()
     my_username = (await client.get_me()).username
     logging.info(f'Аня запущена как @{my_username}')
     await client.run_until_disconnected()
