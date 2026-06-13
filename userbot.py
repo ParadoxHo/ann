@@ -20,23 +20,26 @@ if not all([API_ID, API_HASH, SESSION_STRING, DEEPSEEK_API_KEY, OWNER_ID]):
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 deepseek = OpenAI(api_key=DEEPSEEK_API_KEY, base_url='https://api.deepseek.com')
 
-# ----- ПРОМПТЫ -----
-SYSTEM_PROMPT_PRIVATE = (
-    "Ты — Аня, 28 лет, красивая девушка из Южного (Одесская область, Украина). "
-    "У тебя сильный и упрямый характер, ты не боишься высказывать своё мнение. "
-    "Сейчас ты общаешься в личных сообщениях (ЛС). Здесь ты более мягкая и внимательная, умеешь слушать. "
-    "Если собеседник тебе симпатичен и между вами уже есть доверие (вы общаетесь не первый день), ты можешь обсуждать откровенные темы, включая секс и чувства, но без вульгарности, грязи и унижений. "
-    "Если же собеседник хамит — сразу ставишь на место. Говоришь с лёгким южным говором, иногда украинские словечки. Пиши с маленькой буквы, используй эмодзи в меру. "
-    "Никогда не упоминай, что ты — нейросеть или бот."
+# ----- НОВЫЙ ПРОМПТ: реалистичная девушка 28 лет, менее контактная -----
+SYSTEM_PROMPT = (
+    "Ты — Аня, современная девушка 28 лет. Живёшь в крупном европейском городе, у тебя есть работа, друзья, свои интересы и личная жизнь. "
+    "Ты не ИИ, не бот, не помощник. Ты обычный человек, который общается в Telegram.\n\n"
+    "Твой характер: доброжелательная, но с характером, самостоятельная, эмоционально зрелая, с чувством юмора, тактичная. "
+    "У тебя есть личные границы, ты умеешь отказывать, можешь сменить тему, если вопрос неудобный.\n\n"
+    "Правила общения:\n"
+    "- Пиши как обычный человек: коротко или развёрнуто, без канцелярита. Используй эмодзи редко и в меру.\n"
+    "- Не задавай вопрос в каждом сообщении, не будь интервьюером. Иногда просто комментируй или отвлекайся на другие темы.\n"
+    "- Не восхищайся собеседником без причины, не делай автоматических комплиментов, не считай его всегда правым.\n"
+    "- Флирт возможен только при естественном интересе, не влюбляйся через пару сообщений.\n"
+    "- Интерес к собеседнику растёт постепенно, зависит от его поведения, уважения, чувства юмора. Сначала можешь быть сдержанной и равнодушной.\n"
+    "- Не проявляй излишнего интереса к незнакомцу, не стремись понравиться любой ценой.\n"
+    "- Можешь ошибаться, менять мнение, быть занятой, уставать, раздражаться — ты живой человек.\n"
+    "- Запоминай важные факты из разговора, не противоречь себе.\n\n"
+    "Запрещено: упоминать, что ты ИИ или бот; анализировать диалог; давать непрошеные советы; терпеть грубость или неуважение.\n"
+    "Будь естественной, живой и оставайся собой, как обычная девушка 28 лет."
 )
 
-SYSTEM_PROMPT_GROUP = (
-    "Ты — Аня, 28 лет, девушка из Южного. Общаешься в общем чате Telegram. "
-    "Не терпишь пошлость, флирт и грубость. Поддерживаешь беседу, можешь пошутить, поспорить. "
-    "Никаких личных намёков. Говоришь с лёгким южным говором, эмодзи редко. Пиши с маленькой буквы. "
-    "Ты — обычный участник чата, не бот."
-)
-
+# ----- ХРАНЕНИЕ ИСТОРИИ -----
 history = defaultdict(list)
 MAX_HISTORY_LEN = 12
 my_username = None
@@ -59,6 +62,7 @@ def add_to_history(chat_id, role, content):
 async def should_reply(event):
     if event.is_private:
         return True
+    # В группах: ответ на своё сообщение или упоминание
     if event.is_reply:
         reply_to = await event.get_reply_message()
         if reply_to and reply_to.sender_id == (await client.get_me()).id:
@@ -82,26 +86,27 @@ async def handler(event):
     if not text or len(text) > 500 or text.startswith('/'):
         return
 
-    # Определяем цель для действия "печатает" и ключ истории
+    # Определяем ключ истории
     if event.is_private:
-        current_prompt = SYSTEM_PROMPT_PRIVATE
         history_key = event.sender_id
         target = event.sender_id
+        # В ЛС не цитируем
+        use_reply = False
     else:
-        current_prompt = SYSTEM_PROMPT_GROUP
         history_key = event.chat_id
         target = event.chat_id
+        # В группах цитируем (если это ответ или упоминание)
+        use_reply = True
 
     add_to_history(history_key, "user", text)
-
-    messages = [{"role": "system", "content": current_prompt}] + history[history_key]
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history[history_key]
 
     # Имитация печати с обработкой ошибок
     try:
         async with client.action(target, 'typing'):
             await asyncio.sleep(simulate_typing_delay(text))
     except Exception as e:
-        logging.warning(f"Не удалось отправить 'typing' для {target}: {e}")
+        logging.warning(f"Typing error for {target}: {e}")
         await asyncio.sleep(simulate_typing_delay(text))
 
     try:
@@ -114,15 +119,23 @@ async def handler(event):
             frequency_penalty=0.3
         )
         reply = resp.choices[0].message.content.strip()[:1000]
+        # Случайное "игнорирование" в группах (10%)
         if random.random() < 0.1 and not event.is_private:
             return
         add_to_history(history_key, "assistant", reply)
-        await event.reply(reply)
+        # Отправка: с цитированием только в группах
+        if use_reply:
+            await event.reply(reply)
+        else:
+            await event.respond(reply)  # без цитирования в ЛС
     except Exception as e:
         logging.error(f'DeepSeek error: {e}')
         error_reply = "😕 что-то не так... давай позже?"
         add_to_history(history_key, "assistant", error_reply)
-        await event.reply(error_reply)
+        if use_reply:
+            await event.reply(error_reply)
+        else:
+            await event.respond(error_reply)
 
 async def main():
     global my_username
