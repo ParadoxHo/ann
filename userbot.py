@@ -23,7 +23,7 @@ if not all([API_ID, API_HASH, SESSION_STRING, DEEPSEEK_API_KEY, OWNER_ID]):
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 deepseek = OpenAI(api_key=DEEPSEEK_API_KEY, base_url='https://api.deepseek.com')
 
-# ----- ПРОМПТ (трохи дружелюбніший) -----
+# ----- ПРОМПТ -----
 BASE_PROMPT = (
     "Ти — Аня, 28 років, українка з Южного (Одеська область). "
     "Твоя рідна мова — українська, але ти вільно володієш також російською та англійською.\n"
@@ -54,7 +54,7 @@ history = defaultdict(list)
 msg_count = defaultdict(int)
 last_reply_time = defaultdict(float)
 MAX_HISTORY_LEN = 12
-MIN_REPLY_INTERVAL = 3          # мінімум 3 секунди між відповідями одному користувачу
+MIN_REPLY_INTERVAL = 3
 my_username = None
 
 async def get_my_username():
@@ -83,16 +83,17 @@ async def should_reply(event):
         return True
     return False
 
-# ----- НОВА ФУНКЦІЯ РОЗРАХУНКУ ЗАТРИМКИ -----
+# ----- РОЗРАХУНОК ЗАТРИМКИ (для перших повідомлень швидко) -----
 def calculate_reply_delay(msg_len, user_msg_count, is_private):
-    """Затримка: для перших 2 повідомлень у ЛС 10-60 сек, інакше 30 сек - 1 година"""
+    """Затримка: для перших 2 повідомлень у ЛС 5-20 секунд, далі 30 сек - 1 година"""
     if is_private and user_msg_count <= 2:
-        # Перші повідомлення: швидка відповідь
-        base = random.uniform(10.0, 60.0)
-        base += min(30.0, msg_len / 100 * 15)
-        return min(base, 90.0)  # не більше 90 секунд
+        # Швидка відповідь на перші повідомлення
+        base = random.uniform(5.0, 20.0)
+        # Невелика добавка за довжину
+        base += min(10.0, msg_len / 100 * 5)
+        return min(base, 30.0)
     else:
-        # Стара логіка
+        # Стандартна затримка (від 30 секунд до години)
         base = 30.0
         length_factor = min(300, msg_len / 100 * 60)
         base += length_factor
@@ -118,6 +119,7 @@ async def send_with_retry(target, message, use_reply, event):
             await event.reply(message)
         else:
             await event.respond(message)
+        logging.info(f"Відповідь успішно відправлена для {target}")
         return True
     except FloodWaitError as e:
         wait_time = e.seconds
@@ -137,23 +139,12 @@ async def send_with_retry(target, message, use_reply, event):
         return False
 
 async def mark_as_read(event):
-    """Відмічає повідомлення прочитаним через 5-30 секунд"""
-    delay = random.uniform(5, 30)
+    """Відмічає повідомлення прочитаним через 5-15 секунд"""
+    delay = random.uniform(5, 15)
     await asyncio.sleep(delay)
     try:
         await client.send_read_acknowledge(event.chat_id, message=event.message)
         logging.info(f"Повідомлення в ЛС від {event.sender_id} позначено прочитаним через {delay:.1f} сек")
-    except ValueError as e:
-        if "Could not find the input entity" in str(e):
-            logging.info(f"Кеш порожній, отримую сутність для {event.sender_id}...")
-            try:
-                await client.get_entity(event.sender_id)
-                await client.send_read_acknowledge(event.chat_id, message=event.message)
-                logging.info(f"Повторна спроба: позначено прочитаним для {event.sender_id}")
-            except Exception as e2:
-                logging.warning(f"Не вдалося позначити прочитаним після отримання сутності: {e2}")
-        else:
-            logging.warning(f"Не вдалося позначити прочитаним: {e}")
     except Exception as e:
         logging.warning(f"Не вдалося позначити прочитаним: {e}")
 
@@ -190,8 +181,7 @@ async def handler(event):
         target = event.sender_id
         use_reply = False
         min_interval = MIN_REPLY_INTERVAL
-        # кількість повідомлень від цього користувача (включно з поточним)
-        user_msg_count = msg_count[history_key] + 1
+        user_msg_count = msg_count[history_key] + 1  # ще не збільшили
     else:
         history_key = event.chat_id
         target = event.chat_id
@@ -218,9 +208,12 @@ async def handler(event):
     logging.info(f"Затримка перед відповіддю для {history_key}: {reply_delay:.1f} сек")
     await asyncio.sleep(reply_delay)
 
+    # Повторно перевіряємо, чи потрібно відповідати (могло змінитись)
     if not await should_reply(event):
+        logging.info(f"Після затримки вирішено не відповідати для {history_key}")
         return
 
+    # Додаємо в історію
     add_to_history(history_key, "user", text)
 
     messages = [{"role": "system", "content": BASE_PROMPT}]
@@ -235,6 +228,7 @@ async def handler(event):
         pass
 
     try:
+        logging.info(f"Виклик DeepSeek для {history_key}...")
         resp = deepseek.chat.completions.create(
             model='deepseek-chat',
             messages=messages,
@@ -244,15 +238,16 @@ async def handler(event):
             frequency_penalty=0.3
         )
         reply = resp.choices[0].message.content.strip()[:500]
+        logging.info(f"DeepSeek відповів для {history_key}: {reply[:50]}...")
     except Exception as e:
         logging.error(f'Помилка DeepSeek: {e}')
         reply = "😕 щось не так... давай пізніше?"
 
-    # Випадкове ігнорування
+    # Випадкове ігнорування (дуже рідко)
     if not event.is_private and random.random() < 0.15:
         logging.info("Випадкове ігнорування в групі")
         return
-    if event.is_private and random.random() < 0.05:
+    if event.is_private and random.random() < 0.02:  # 2% ігнору в ЛС
         logging.info("Випадкове ігнорування в ЛС")
         return
 
@@ -265,7 +260,7 @@ async def main():
     my_username = (await client.get_me()).username
     logging.info(f'Аня запущена як @{my_username}')
 
-    # Предзавантаження діалогів для кешу
+    # Предзавантаження діалогів
     try:
         dialogs = await client.get_dialogs(limit=50)
         logging.info(f"Завантажено {len(dialogs)} діалогів для заповнення кешу.")
