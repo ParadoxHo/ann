@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import random
+import re
 import time
 from collections import defaultdict
 from datetime import datetime
@@ -23,34 +24,26 @@ if not all([API_ID, API_HASH, SESSION_STRING, DEEPSEEK_API_KEY, OWNER_ID]):
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 deepseek = OpenAI(api_key=DEEPSEEK_API_KEY, base_url='https://api.deepseek.com')
 
-# ----- ПРОМПТ (автовизначення мови, холодна) -----
+# ----- ПРОМПТ (без заохочення коментарів) -----
 BASE_PROMPT = (
-    "Ти — Аня, 28 років, українка з Южного (Одеська область). "
-    "Твоя рідна мова — українська, але ти вільно володієш також російською та англійською.\n"
-    "**ВАЖЛИВЕ ПРАВИЛО:** Завжди визначай мову співрозмовника. Відповідай тією ж мовою, якою до тебе звернулися. "
-    "Якщо тобі пишуть російською — відповідай російською. Якщо українською — українською. Якщо англійською — англійською.\n"
-    "Ніколи не кажи, що не розумієш українську або російську. Для тебе це нормально.\n"
-    "У тебе своє життя, робота, друзі. Ти не ШІ і не бот, ти звичайна людина.\n\n"
-    "ТВІЙ ХАРАКТЕР: стримана, трохи холодна з незнайомцями. Не прагнеш подобатись. "
-    "Маєш особисті кордони, не терпиш фамільярності та вульгарності.\n\n"
-    "ПРАВИЛА СПІЛКУВАННЯ НА ПОЧАТКУ (поки людина тобі не цікава):\n"
-    "- Відповідай коротко, сухо, без зайвих емоцій.\n"
-    "- Не став запитань співрозмовнику.\n"
-    "- Не виявляй ініціативи, не підтримуй тему, якщо вона тобі не цікава.\n"
-    "- Не жартуй, не використовуй емодзі (тільки якщо ситуація не вимагає).\n"
-    "- Не захоплюйся, не роби компліментів, не підлаштовуйся.\n"
-    "- Якщо співрозмовник неприємний або грубить — можеш відповісти різко або замовкнути.\n\n"
-    "Поступово, якщо людина виявиться цікавою, поважною та дотепною, можеш стати трішки теплішою, але не одразу.\n"
-    "Ніколи не згадуй, що ти нейромережа. Ти — звичайна дівчина з України, яка живе в Європі."
+    "Ти — Аня, 28 років, українка з Южного. Твоя рідна мова — українська, також вільно володієш російською та англійською. "
+    "Відповідай ТІЄЮ Ж МОВОЮ, якою написано повідомлення співрозмовника.\n\n"
+    "Ти звичайна людина, не ШІ. Твоя відповідь має бути природною, без жодних пояснень, без опису своїх емоцій, без внутрішніх коментарів. "
+    "НЕ пиши в дужках свої дії або настрій, наприклад: (сухо), (строго), (нейтрально), (з посмішкою), (задумливо) — це заборонено. "
+    "Просто пиши текст відповіді. Не використовуй мета-коментарі. Не аналізуй свої думки вголос.\n\n"
+    "ТВІЙ ХАРАКТЕР: стримана, трохи холодна з незнайомцями. Не прагнеш подобатись. Маєш особисті кордони.\n\n"
+    "ПРАВИЛА НА ПОЧАТКУ (поки людина тобі не цікава): відповідай коротко, сухо, без запитань, без ініціативи, без жартів, без емодзі. "
+    "Можна просто 'ага', 'ок', 'зрозуміло', 'ні', 'так'. Не вступай в довгі бесіди. "
+    "Поступово, якщо людина цікава, можеш стати трохи теплішою, але без зайвої емоційності.\n"
+    "Ніколи не згадуй, що ти нейромережа. Ти — звичайна дівчина."
 )
 
 COLD_REMINDER = (
-    "Нагадай собі: ти маєш відповідати ТІЄЮ Ж МОВОЮ, якою написав співрозмовник. "
-    "Ти поки не зацікавлена в цій людині. Відповідай максимально сухо, односкладово, без запитань та емоцій. "
-    "Не підтримуй розмову, якщо вона тебе не чіпляє."
+    "Ти поки не зацікавлена в цій людині. Відповідай максимально сухо, коротко, без запитань. "
+    "Не використовуй дужки з коментарями. Просто коротка фраза або одне слово."
 )
 
-# ----- ГЛОБАЛЬНИЙ ФЛАГ ДЛЯ ВИМКНЕННЯ БОТА -----
+# ----- ГЛОБАЛЬНИЙ ФЛАГ ДЛЯ ВИМКНЕННЯ -----
 bot_active = True
 
 # ----- ЗБЕРІГАННЯ ДАНИХ -----
@@ -60,6 +53,13 @@ last_reply_time = defaultdict(float)
 MAX_HISTORY_LEN = 12
 MIN_REPLY_INTERVAL = 3
 my_username = None
+
+def clean_reply(text: str) -> str:
+    """Видаляє режисерські ремарки на початку повідомлення: (сухо), [строго] тощо"""
+    # Видаляємо (текст) або [текст] на початку рядка, можливо з пробілами після
+    text = re.sub(r'^\s*[\(\[]\s*[^\)\]]+\s*[\)\]]\s*', '', text)
+    # Також видаляємо, якщо ремарка всередині, але краще не ризикувати
+    return text.strip()
 
 async def get_my_username():
     global my_username
@@ -148,22 +148,20 @@ async def delayed_read_ack(event, delay, user_id):
     except Exception as e:
         logging.warning(f"Не вдалося позначити прочитаним: {e}")
 
-# ----- ОБРОБНИК КОМАНД ВИМКНЕННЯ / ВМИКНЕННЯ -----
 @client.on(events.NewMessage(pattern='/stop', from_users=OWNER_ID))
 async def stop_bot(event):
     global bot_active
     bot_active = False
     await event.respond("🤖 Бот зупинений. Для запуску використовуйте /start.")
-    logging.info("Бот зупинений власником через команду /stop")
+    logging.info("Бот зупинений власником")
 
 @client.on(events.NewMessage(pattern='/start', from_users=OWNER_ID))
 async def start_bot(event):
     global bot_active
     bot_active = True
-    await event.respond("🤖 Бот запущено і знову відповідає на повідомлення.")
-    logging.info("Бот запущено власником через команду /start")
+    await event.respond("🤖 Бот запущено.")
+    logging.info("Бот запущено власником")
 
-# ----- ОСНОВНИЙ ОБРОБНИК ПОВІДОМЛЕНЬ -----
 @client.on(events.NewMessage(incoming=True))
 async def handler(event):
     global bot_active
@@ -184,25 +182,21 @@ async def handler(event):
         use_reply = False
         min_interval = MIN_REPLY_INTERVAL
         user_msg_count = msg_count[history_key] + 1
-        will_reply = True
     else:
         history_key = event.chat_id
         target = event.chat_id
         use_reply = True
         min_interval = MIN_REPLY_INTERVAL + 2
         user_msg_count = 0
-        will_reply = True
 
-    # ----- ВІДСТРОЧЕНА ПОЗНАЧКА ПРОЧИТАННЯ (тільки в ЛС) -----
     if event.is_private:
-        delay = calculate_read_delay(event, will_reply, len(text), user_msg_count)
-        logging.info(f"Заплановано позначку прочитання для {event.sender_id} через {delay:.1f} сек")
+        delay = calculate_read_delay(event, True, len(text), user_msg_count)
+        logging.info(f"Заплановано прочитання для {event.sender_id} через {delay:.1f} сек")
         asyncio.create_task(delayed_read_ack(event, delay, event.sender_id))
 
-    # ----- RATE LIMIT -----
     now = time.time()
     if now - last_reply_time[history_key] < min_interval:
-        logging.info(f"Rate limit: пропускаємо {history_key}, минуло {now - last_reply_time[history_key]:.1f}с")
+        logging.info(f"Rate limit: пропускаємо {history_key}")
         return
     last_reply_time[history_key] = now
 
@@ -231,12 +225,17 @@ async def handler(event):
             top_p=0.9,
             frequency_penalty=0.3
         )
-        reply = resp.choices[0].message.content.strip()[:500]
+        reply = resp.choices[0].message.content.strip()
+        # Очищаємо від режисерських ремарок
+        reply = clean_reply(reply)
+        # Якщо після очищення порожньо, ставимо нейтральну відповідь
+        if not reply:
+            reply = "ага"
+        reply = reply[:500]
     except Exception as e:
         logging.error(f'Помилка DeepSeek: {e}')
         reply = "😕 щось не так... давай пізніше?"
 
-    # Випадкове ігнорування
     if not event.is_private and random.random() < 0.2:
         logging.info("Випадкове ігнорування в групі")
         return
