@@ -41,13 +41,12 @@ BASE_PROMPT = (
     "Ніколи не згадуй, що ти нейромережа. Ти — звичайна дівчина з України, яка живе в Європі."
 )
 
-# ----- ХОЛОДНИЙ СТАРТ (короткі відповіді) -----
 COLD_REMINDER = (
     "Нагадай собі: спочатку краще відповідати коротко, без запитань. "
     "Не виявляй надто великої цікавості. Просто відповідай по суті: 'ага', 'ок', 'зрозуміло', 'ні', 'так'."
 )
 
-# ----- ГЛОБАЛЬНИЙ ФЛАГ ДЛЯ ВИМКНЕННЯ -----
+# ----- ГЛОБАЛЬНИЙ ФЛАГ -----
 bot_active = True
 
 # ----- ЗБЕРІГАННЯ ДАНИХ -----
@@ -84,42 +83,34 @@ async def should_reply(event):
         return True
     return False
 
-# ----- РОЗРАХУНОК ЗАТРИМКИ ПЕРЕД ВІДПОВІДДЮ (ДО ГОДИНИ) -----
-def calculate_reply_delay(msg_len, user_msg_count):
-    """
-    Повертає затримку в секундах (від 30 до 3600).
-    Фактори: довжина повідомлення, знайомство, час доби, настрій.
-    """
-    base = 30.0  # мінімум 30 секунд
-
-    # Довжина повідомлення (кожні 100 символів + до 5 хвилин)
-    length_factor = min(300, msg_len / 100 * 60)
-    base += length_factor
-
-    # Знайомий користувач (чим більше повідомлень, тим трохи швидше, але все одно довго)
-    if user_msg_count >= 20:
-        base -= 60
-    elif user_msg_count >= 5:
-        base -= 30
-    elif user_msg_count <= 2:
-        base += 120
-
-    # Час доби (вночі довше не відповідає)
-    hour = datetime.now().hour
-    if 23 <= hour or hour <= 6:
-        base += random.uniform(300, 1200)      # +5-20 хвилин вночі
-    elif 8 <= hour <= 11:
-        base += random.uniform(60, 300)        # +1-5 хвилин вранці
+# ----- НОВА ФУНКЦІЯ РОЗРАХУНКУ ЗАТРИМКИ -----
+def calculate_reply_delay(msg_len, user_msg_count, is_private):
+    """Затримка: для перших 2 повідомлень у ЛС 10-60 сек, інакше 30 сек - 1 година"""
+    if is_private and user_msg_count <= 2:
+        # Перші повідомлення: швидка відповідь
+        base = random.uniform(10.0, 60.0)
+        base += min(30.0, msg_len / 100 * 15)
+        return min(base, 90.0)  # не більше 90 секунд
     else:
-        base += random.uniform(-30, 120)
-
-    # Випадковий настрій (від 0.6 до 1.8)
-    mood = random.uniform(0.6, 1.8)
-    base *= mood
-
-    # Обмеження від 30 секунд до 3600 секунд (1 година)
-    delay = max(30.0, min(3600.0, base))
-    return delay
+        # Стара логіка
+        base = 30.0
+        length_factor = min(300, msg_len / 100 * 60)
+        base += length_factor
+        if user_msg_count >= 20:
+            base -= 60
+        elif user_msg_count >= 5:
+            base -= 30
+        else:
+            base += 120
+        hour = datetime.now().hour
+        if 23 <= hour or hour <= 6:
+            base += random.uniform(300, 1200)
+        elif 8 <= hour <= 11:
+            base += random.uniform(60, 300)
+        else:
+            base += random.uniform(-30, 120)
+        base *= random.uniform(0.6, 1.8)
+        return max(30.0, min(3600.0, base))
 
 async def send_with_retry(target, message, use_reply, event):
     try:
@@ -145,7 +136,28 @@ async def send_with_retry(target, message, use_reply, event):
         logging.error(f"Помилка відправки: {e}")
         return False
 
-# ----- ОБРОБНИК КОМАНД ВИМКНЕННЯ / ВМИКНЕННЯ -----
+async def mark_as_read(event):
+    """Відмічає повідомлення прочитаним через 5-30 секунд"""
+    delay = random.uniform(5, 30)
+    await asyncio.sleep(delay)
+    try:
+        await client.send_read_acknowledge(event.chat_id, message=event.message)
+        logging.info(f"Повідомлення в ЛС від {event.sender_id} позначено прочитаним через {delay:.1f} сек")
+    except ValueError as e:
+        if "Could not find the input entity" in str(e):
+            logging.info(f"Кеш порожній, отримую сутність для {event.sender_id}...")
+            try:
+                await client.get_entity(event.sender_id)
+                await client.send_read_acknowledge(event.chat_id, message=event.message)
+                logging.info(f"Повторна спроба: позначено прочитаним для {event.sender_id}")
+            except Exception as e2:
+                logging.warning(f"Не вдалося позначити прочитаним після отримання сутності: {e2}")
+        else:
+            logging.warning(f"Не вдалося позначити прочитаним: {e}")
+    except Exception as e:
+        logging.warning(f"Не вдалося позначити прочитаним: {e}")
+
+# ----- ОБРОБНИК КОМАНД -----
 @client.on(events.NewMessage(pattern='/stop', from_users=OWNER_ID))
 async def stop_bot(event):
     global bot_active
@@ -173,12 +185,12 @@ async def handler(event):
     if not text or len(text) > 500 or text.startswith('/'):
         return
 
-    # Визначаємо параметри
     if event.is_private:
         history_key = event.sender_id
         target = event.sender_id
         use_reply = False
         min_interval = MIN_REPLY_INTERVAL
+        # кількість повідомлень від цього користувача (включно з поточним)
         user_msg_count = msg_count[history_key] + 1
     else:
         history_key = event.chat_id
@@ -187,7 +199,7 @@ async def handler(event):
         min_interval = MIN_REPLY_INTERVAL + 2
         user_msg_count = 0
 
-    # Перевірка rate limit (щоб не спамити відповідями)
+    # Rate limit
     now = time.time()
     if now - last_reply_time[history_key] < min_interval:
         logging.info(f"Rate limit: пропускаємо {history_key}")
@@ -197,25 +209,20 @@ async def handler(event):
     if event.is_private:
         msg_count[history_key] += 1
 
-    # Розраховуємо затримку перед відповіддю (від 30 секунд до 1 години)
-    reply_delay = calculate_reply_delay(len(text), user_msg_count)
+    # ---- ПОЗНАЧКА ПРОЧИТАНОГО (тільки ЛС) ----
+    if event.is_private:
+        asyncio.create_task(mark_as_read(event))
+
+    # ---- РОЗРАХУНОК ЗАТРИМКИ ПЕРЕД ВІДПОВІДДЮ ----
+    reply_delay = calculate_reply_delay(len(text), user_msg_count, event.is_private)
     logging.info(f"Затримка перед відповіддю для {history_key}: {reply_delay:.1f} сек")
-
-    # ---- ПОЗНАЧКА ПРОЧИТАННЯ через частину затримки (5-30 секунд) ----
-    read_delay = min(random.uniform(5, 30), reply_delay - 1)  # не більше ніж reply_delay
-    if read_delay < 1:
-        read_delay = 1
-    asyncio.create_task(delayed_read_ack(event, read_delay))
-
-    # Чекаємо основну затримку
     await asyncio.sleep(reply_delay)
 
-    # Перевіряємо, чи треба відповідати (могло змінитися, але залишимо)
     if not await should_reply(event):
         return
 
-    # Додаємо в історію та формуємо запит до DeepSeek
     add_to_history(history_key, "user", text)
+
     messages = [{"role": "system", "content": BASE_PROMPT}]
     if event.is_private and msg_count[history_key] <= 4:
         messages.append({"role": "system", "content": COLD_REMINDER})
@@ -223,7 +230,6 @@ async def handler(event):
 
     try:
         async with client.action(target, 'typing'):
-            # Невелика затримка набору тексту (імітація друку)
             await asyncio.sleep(random.uniform(1.0, 3.0))
     except Exception:
         pass
@@ -233,7 +239,7 @@ async def handler(event):
             model='deepseek-chat',
             messages=messages,
             max_tokens=250,
-            temperature=1.2,      # трохи вище для природності
+            temperature=1.2,
             top_p=0.9,
             frequency_penalty=0.3
         )
@@ -242,7 +248,7 @@ async def handler(event):
         logging.error(f'Помилка DeepSeek: {e}')
         reply = "😕 щось не так... давай пізніше?"
 
-    # Випадкове ігнорування (рідше)
+    # Випадкове ігнорування
     if not event.is_private and random.random() < 0.15:
         logging.info("Випадкове ігнорування в групі")
         return
@@ -253,20 +259,19 @@ async def handler(event):
     add_to_history(history_key, "assistant", reply)
     await send_with_retry(target, reply, use_reply, event)
 
-async def delayed_read_ack(event, delay):
-    """Відмічає повідомлення прочитаним через задану затримку (секунди)"""
-    await asyncio.sleep(delay)
-    try:
-        await client.send_read_acknowledge(event.chat_id, message=event.message)
-        logging.info(f"Повідомлення в ЛС від {event.sender_id} позначено прочитаним через {delay:.1f} сек")
-    except Exception as e:
-        logging.warning(f"Не вдалося позначити прочитаним: {e}")
-
 async def main():
     global my_username
     await client.start()
     my_username = (await client.get_me()).username
     logging.info(f'Аня запущена як @{my_username}')
+
+    # Предзавантаження діалогів для кешу
+    try:
+        dialogs = await client.get_dialogs(limit=50)
+        logging.info(f"Завантажено {len(dialogs)} діалогів для заповнення кешу.")
+    except Exception as e:
+        logging.error(f"Не вдалося завантажити діалоги: {e}")
+
     await client.run_until_disconnected()
 
 if __name__ == '__main__':
