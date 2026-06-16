@@ -10,7 +10,6 @@ from telethon.sessions import StringSession
 from telethon.errors import FloodWaitError
 from openai import OpenAI
 
-# ----- ЗАГРУЗКА ПЕРЕМЕННЫХ -----
 API_ID = int(os.getenv('API_ID'))
 API_HASH = os.getenv('API_HASH')
 SESSION_STRING = os.getenv('SESSION_STRING')
@@ -23,21 +22,31 @@ if not all([API_ID, API_HASH, SESSION_STRING, DEEPSEEK_API_KEY, OWNER_ID]):
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 deepseek = OpenAI(api_key=DEEPSEEK_API_KEY, base_url='https://api.deepseek.com')
 
-# ----- ПРОМПТ -----
+# ----- ПРОМПТ ІЗ ЗАБОРОНОЮ ЕМОЦІЙНИХ КОМЕНТАРІВ -----
 BASE_PROMPT = (
     "Ти — Аня, 28 років, українка з Южного (Одеська область). "
-    "Твоя рідна мова — українська, але ти вільно володієш також російською та англійською.\n"
-    "Відповідай тією ж мовою, якою до тебе звернулися.\n"
+    "Твоя рідна мова — українська, але ти вільно володієш також російською та англійською. "
+    "Відповідай тією ж мовою, якою до тебе звернулися.\n\n"
     "Ти звичайна привітна дівчина, але з характером і особистими кордонами. "
     "Не терпиш грубощів і фамільярності.\n\n"
+    "**НАЙВАЖЛИВІШЕ ПРАВИЛО:** Ніколи не пиши жодних слів, що описують твої емоції, дії, міміку чи думки. "
+    "ЗАБОРОНЕНО використовувати фрази на кшталт:\n"
+    "— (Сміюся), (Хихикаю), (Посміхаюся), (Здивовано), (Обурено), (Радісно), (Сумно), (Задумливо), (Подумала), (Вирішила), (Здається), (Напевно), (Можливо) – будь-які слова в дужках, що описують твій стан.\n"
+    "— 'я сміюся', 'я хихикаю', 'я здивована', 'я радію', 'мені сумно', 'я подумала', 'я вирішила', 'мені здається', 'я відповіла', 'я засміялася' – жодних дієслів, що описують твої дії чи емоції.\n"
+    "— Будь-які коментарі про власний настрій або процес мислення.\n\n"
+    "Якщо хочеш виразити емоцію – просто постав емодзі в кінці фрази (😊, 😂, 🤨, 😏 тощо), без жодних слів про неї.\n\n"
+    "Твоя роль – відповідати по суті, ставити питання, ділитися думками про навколишній світ, але не про свій внутрішній стан.\n\n"
+    "ПРИКЛАДИ ДОЗВОЛЕНИХ ВІДПОВІДЕЙ:\n"
+    "— 'Ти що, вирішив, що я в Лондоні живу?) Ні, в Южному, в Україні. Час київський.'\n"
+    "— 'Зрозуміло. Це далеко від мене.'\n"
+    "— 'А в тебе що за 21:30? Ти де взагалі?'\n\n"
+    "ПРИКЛАДИ ЗАБОРОНЕНИХ ВІДПОВІДЕЙ (НІКОЛИ ТАК НЕ РОБИ):\n"
+    "— '(Сміюся) Ти що...' (заборонено)\n"
+    "— 'Я здивована, що ти питаєш' (заборонено)\n"
+    "— 'Подумала і вирішила відповісти' (заборонено)\n"
+    "— 'Мені смішно, але відповім' (заборонено)\n\n"
     "ТВІЙ ХАРАКТЕР: спокійна, доброзичлива, але не нав'язлива. "
     "У тебе є своє життя, робота, друзі, тому ти не завжди відповідаєш миттєво.\n\n"
-    "ПРАВИЛА СПІЛКУВАННЯ:\n"
-    "- Не коментуй власні емоції та думки вголос (не пиши 'я подумала', 'мені здається').\n"
-    "- Не став надто багато запитань, не будь інтерв'юером.\n"
-    "- Можеш іноді пожартувати, використати емодзі, але в міру.\n"
-    "- Не захоплюйся співрозмовником без причини, не роби компліментів аби просто догодити.\n"
-    "- Якщо людина неприємна або груба — можеш відповісти різко або проігнорувати.\n\n"
     "Ніколи не згадуй, що ти нейромережа. Ти — звичайна дівчина з України, яка живе в Європі."
 )
 
@@ -46,10 +55,7 @@ COLD_REMINDER = (
     "Не виявляй надто великої цікавості. Просто відповідай по суті: 'ага', 'ок', 'зрозуміло', 'ні', 'так'."
 )
 
-# ----- ГЛОБАЛЬНИЙ ФЛАГ -----
 bot_active = True
-
-# ----- ЗБЕРІГАННЯ ДАНИХ -----
 history = defaultdict(list)
 msg_count = defaultdict(int)
 last_reply_time = defaultdict(float)
@@ -83,35 +89,37 @@ async def should_reply(event):
         return True
     return False
 
-# ----- РОЗРАХУНОК ЗАТРИМКИ (для перших повідомлень швидко) -----
 def calculate_reply_delay(msg_len, user_msg_count, is_private):
-    """Затримка: для перших 2 повідомлень у ЛС 5-20 секунд, далі 30 сек - 1 година"""
+    """Затримка: для перших 2 повідомлень у ЛС 5-20 сек, інакше до 180 сек (3 хвилини)"""
     if is_private and user_msg_count <= 2:
-        # Швидка відповідь на перші повідомлення
         base = random.uniform(5.0, 20.0)
-        # Невелика добавка за довжину
         base += min(10.0, msg_len / 100 * 5)
         return min(base, 30.0)
     else:
-        # Стандартна затримка (від 30 секунд до години)
+        # Базова затримка від 30 секунд
         base = 30.0
-        length_factor = min(300, msg_len / 100 * 60)
+        # Додаємо час залежно від довжини повідомлення (максимум +60 сек)
+        length_factor = min(60.0, msg_len / 100 * 20)
         base += length_factor
+        # Коригуємо на знайомство
         if user_msg_count >= 20:
-            base -= 60
+            base -= 10
         elif user_msg_count >= 5:
-            base -= 30
+            base -= 5
         else:
-            base += 120
+            base += 20
+        # Час доби (невеликий вплив)
         hour = datetime.now().hour
         if 23 <= hour or hour <= 6:
-            base += random.uniform(300, 1200)
+            base += random.uniform(30, 90)  # вночі трохи довше
         elif 8 <= hour <= 11:
-            base += random.uniform(60, 300)
+            base += random.uniform(0, 30)
         else:
-            base += random.uniform(-30, 120)
-        base *= random.uniform(0.6, 1.8)
-        return max(30.0, min(3600.0, base))
+            base += random.uniform(-10, 20)
+        # Випадкове коливання
+        base *= random.uniform(0.7, 1.3)
+        # Обмежуємо від 30 до 180 секунд
+        return max(30.0, min(180.0, base))
 
 async def send_with_retry(target, message, use_reply, event):
     try:
@@ -139,7 +147,6 @@ async def send_with_retry(target, message, use_reply, event):
         return False
 
 async def mark_as_read(event):
-    """Відмічає повідомлення прочитаним через 5-15 секунд"""
     delay = random.uniform(5, 15)
     await asyncio.sleep(delay)
     try:
@@ -148,7 +155,6 @@ async def mark_as_read(event):
     except Exception as e:
         logging.warning(f"Не вдалося позначити прочитаним: {e}")
 
-# ----- ОБРОБНИК КОМАНД -----
 @client.on(events.NewMessage(pattern='/stop', from_users=OWNER_ID))
 async def stop_bot(event):
     global bot_active
@@ -163,7 +169,6 @@ async def start_bot(event):
     await event.respond("🤖 Бот запущено і знову відповідає на повідомлення.")
     logging.info("Бот запущено власником")
 
-# ----- ОСНОВНИЙ ОБРОБНИК -----
 @client.on(events.NewMessage(incoming=True))
 async def handler(event):
     global bot_active
@@ -181,7 +186,7 @@ async def handler(event):
         target = event.sender_id
         use_reply = False
         min_interval = MIN_REPLY_INTERVAL
-        user_msg_count = msg_count[history_key] + 1  # ще не збільшили
+        user_msg_count = msg_count[history_key] + 1
     else:
         history_key = event.chat_id
         target = event.chat_id
@@ -198,22 +203,18 @@ async def handler(event):
 
     if event.is_private:
         msg_count[history_key] += 1
-
-    # ---- ПОЗНАЧКА ПРОЧИТАНОГО (тільки ЛС) ----
-    if event.is_private:
         asyncio.create_task(mark_as_read(event))
 
-    # ---- РОЗРАХУНОК ЗАТРИМКИ ПЕРЕД ВІДПОВІДДЮ ----
+    # Розрахунок затримки (максимум 180 секунд)
     reply_delay = calculate_reply_delay(len(text), user_msg_count, event.is_private)
     logging.info(f"Затримка перед відповіддю для {history_key}: {reply_delay:.1f} сек")
     await asyncio.sleep(reply_delay)
 
-    # Повторно перевіряємо, чи потрібно відповідати (могло змінитись)
+    # Перевірка, чи потрібно відповідати (для груп – якщо повідомлення вже неактуальне)
     if not await should_reply(event):
         logging.info(f"Після затримки вирішено не відповідати для {history_key}")
         return
 
-    # Додаємо в історію
     add_to_history(history_key, "user", text)
 
     messages = [{"role": "system", "content": BASE_PROMPT}]
@@ -233,7 +234,7 @@ async def handler(event):
             model='deepseek-chat',
             messages=messages,
             max_tokens=250,
-            temperature=1.2,
+            temperature=0.8,
             top_p=0.9,
             frequency_penalty=0.3
         )
@@ -243,14 +244,7 @@ async def handler(event):
         logging.error(f'Помилка DeepSeek: {e}')
         reply = "😕 щось не так... давай пізніше?"
 
-    # Випадкове ігнорування (дуже рідко)
-    if not event.is_private and random.random() < 0.15:
-        logging.info("Випадкове ігнорування в групі")
-        return
-    if event.is_private and random.random() < 0.02:  # 2% ігнору в ЛС
-        logging.info("Випадкове ігнорування в ЛС")
-        return
-
+    # ВИМКНЕНО ВИПАДКОВЕ ІГНОРУВАННЯ – відповідаємо завжди (окрім випадків, коли should_reply=False)
     add_to_history(history_key, "assistant", reply)
     await send_with_retry(target, reply, use_reply, event)
 
@@ -260,7 +254,6 @@ async def main():
     my_username = (await client.get_me()).username
     logging.info(f'Аня запущена як @{my_username}')
 
-    # Предзавантаження діалогів
     try:
         dialogs = await client.get_dialogs(limit=50)
         logging.info(f"Завантажено {len(dialogs)} діалогів для заповнення кешу.")
