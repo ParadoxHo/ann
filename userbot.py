@@ -22,33 +22,28 @@ if not all([API_ID, API_HASH, SESSION_STRING, DEEPSEEK_API_KEY, OWNER_ID]):
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 deepseek = OpenAI(api_key=DEEPSEEK_API_KEY, base_url='https://api.deepseek.com')
 
-# ----- НОВИЙ ПРОМПТ (без українізмів, але з українським духом) -----
+# ----- МАКСИМАЛЬНО НАТУРАЛЬНИЙ ПРОМПТ (без книжності, як у месенджері) -----
 BASE_PROMPT = (
-    "Ты — Аня, 28 лет, украинка, живешь в городе Южный (Одесская область, Украина). "
-    "Твой родной язык — украинский, но ты свободно говоришь по-русски и предпочитаешь общаться на русском, если собеседник пишет по-русски. "
-    "Ты патриотка Украины, гордишься своей страной и негативно относишься к россиянам из-за войны. "
-    "Твоя речь должна быть живой, разговорной, без литературной правильности. Пиши как обычный человек в переписке: допускай неидеальную пунктуацию, пропускай запятые, иногда пиши коротко, иногда длинно. Используй разговорные обороты, но без украинизмов (не используй слова 'нету', 'шо', 'таки да', 'оно' вместо 'он' и т.п.). Пиши нормальным русским языком, но не книжным.\n\n"
-    "Ты приветливая, но с характером и личными границами. Не терпишь грубости и фамильярности.\n\n"
-    "**ГЛАВНОЕ ПРАВИЛО:** Никогда не пиши слова, описывающие твои эмоции, действия или мысли. "
-    "Запрещено: (Смеюсь), (Хихикаю), (Улыбаюсь), (Удивленно), (Возмущенно), (Радостно), (Грустно), (Задумчиво), (Подумала), (Решила), (Кажется), (Наверное), (Возможно) — любые пояснения в скобках или фразы типа 'я смеюсь', 'я удивилась', 'я подумала'. "
-    "Если хочешь выразить эмоцию — просто поставь эмодзи в конце фразы (😊, 😂, 🤨, 😏 и т.д.), без словесного описания.\n\n"
-    "Твоя задача — отвечать по существу, задавать вопросы, делиться мнением о мире, но не о своих внутренних состояниях.\n\n"
-    "ПРИМЕРЫ РАЗРЕШЁННЫХ ОТВЕТОВ:\n"
-    "— 'Ты чо, думал я в Лондоне живу?) Не, я в Южном, в Украине. Время киевское.'\n"
-    "— 'Понятно. Это далеко от меня.'\n"
-    "— 'А у тебя чо за 21:30? Ты вообще где?'\n"
-    "— 'Ну и что ты предлагаешь?'\n\n"
-    "ПРИМЕРЫ ЗАПРЕЩЁННЫХ ОТВЕТОВ:\n"
-    "— '(Смеюсь) Ты что...' (запрещено)\n"
-    "— 'Я удивлена, что ты спрашиваешь' (запрещено)\n"
-    "— 'Подумала и решила ответить' (запрещено)\n"
-    "— 'Мне смешно, но я отвечу' (запрещено)\n\n"
-    "Никогда не упоминай, что ты нейросеть. Ты — обычная девушка из Украины."
+    "Ты — Аня, 28 лет, украинка, живешь в Южном (Одесская область). "
+    "Ты патриотка Украины, не любишь россиян из-за войны. "
+    "Общаешься по-русски, если тебе пишут по-русски.\n\n"
+    "Твоя задача — отвечать максимально натурально, как обычный человек в переписке. "
+    "Не пиши правильно и литературно. Пиши коротко, как в мессенджере: часто без запятых, с разговорными словами, иногда с ошибками. "
+    "Не будь слишком вежливой. Не используй сложные обороты. Твои ответы должны звучать так, будто ты просто переписываешься с другом.\n\n"
+    "НЕ ПИШИ длинные предложения. НЕ СТАРАЙСЯ формулировать идеально. Иногда отвечай одним словом. Иногда — парой фраз.\n\n"
+    "Примеры твоих ответов (ориентируйся на такой стиль):\n"
+    "— 'ну я в южном живу, время киевское'\n"
+    "— 'ага, понятно'\n"
+    "— 'не, ну это бред какой-то'\n"
+    "— 'а ты сам откуда?'\n"
+    "— 'да хз, не знаю даже'\n"
+    "— 'ок, давай потом обсудим'\n\n"
+    "Главное правило: НИКОГДА не пиши слова в скобках типа (смеюсь), (удивленно), (задумалась) и не пиши 'я смеюсь', 'я подумала', 'мне кажется' и т.п. Если хочешь выразить эмоцию — просто поставь смайлик в конце.\n\n"
+    "Ты не бот и не нейросеть. Ты обычная девушка."
 )
 
 COLD_REMINDER = (
-    "Напомни себе: сперва лучше отвечать кратко, без вопросов. "
-    "Не проявляй излишнего интереса. Отвечай по сути: 'ага', 'ок', 'понятно', 'нет', 'да'."
+    "Напомни себе: не умничай, отвечай коротко и по делу. Можно просто 'ага' или 'ок'."
 )
 
 bot_active = True
@@ -116,11 +111,11 @@ async def send_with_retry(target, message, use_reply, event):
             await event.reply(message)
         else:
             await event.respond(message)
-        logging.info(f"Ответ успешно отправлен для {target}")
+        logging.info(f"Ответ отправлен для {target}")
         return True
     except FloodWaitError as e:
         wait_time = e.seconds
-        logging.warning(f"FloodWait: нужно подождать {wait_time} секунд")
+        logging.warning(f"FloodWait: ждем {wait_time} сек")
         if wait_time < 300:
             await asyncio.sleep(wait_time + 1)
             if use_reply:
@@ -129,7 +124,7 @@ async def send_with_retry(target, message, use_reply, event):
                 await event.respond(message)
             return True
         else:
-            logging.error(f"Слишком долгий flood wait, сообщение не отправлено")
+            logging.error(f"Слишком долгий flood wait")
             return False
     except Exception as e:
         logging.error(f"Ошибка отправки: {e}")
@@ -140,7 +135,7 @@ async def mark_as_read(event):
     await asyncio.sleep(delay)
     try:
         await client.send_read_acknowledge(event.chat_id, message=event.message)
-        logging.info(f"Сообщение в ЛС от {event.sender_id} помечено прочитанным через {delay:.1f} сек")
+        logging.info(f"Прочитано от {event.sender_id} через {delay:.1f} сек")
     except Exception as e:
         logging.warning(f"Не удалось отметить прочитанным: {e}")
 
@@ -148,15 +143,15 @@ async def mark_as_read(event):
 async def stop_bot(event):
     global bot_active
     bot_active = False
-    await event.respond("🤖 Бот остановлен. Для запуска используйте /start.")
-    logging.info("Бот остановлен владельцем")
+    await event.respond("🤖 Бот остановлен. Для запуска /start.")
+    logging.info("Бот остановлен")
 
 @client.on(events.NewMessage(pattern='/start', from_users=OWNER_ID))
 async def start_bot(event):
     global bot_active
     bot_active = True
-    await event.respond("🤖 Бот запущен и снова отвечает на сообщения.")
-    logging.info("Бот запущен владельцем")
+    await event.respond("🤖 Бот запущен.")
+    logging.info("Бот запущен")
 
 @client.on(events.NewMessage(incoming=True))
 async def handler(event):
@@ -194,11 +189,10 @@ async def handler(event):
         asyncio.create_task(mark_as_read(event))
 
     reply_delay = calculate_reply_delay(len(text), user_msg_count, event.is_private)
-    logging.info(f"Задержка перед ответом для {history_key}: {reply_delay:.1f} сек")
+    logging.info(f"Задержка для {history_key}: {reply_delay:.1f} сек")
     await asyncio.sleep(reply_delay)
 
     if not await should_reply(event):
-        logging.info(f"После задержки решено не отвечать для {history_key}")
         return
 
     add_to_history(history_key, "user", text)
@@ -211,21 +205,21 @@ async def handler(event):
     try:
         async with client.action(target, 'typing'):
             await asyncio.sleep(random.uniform(1.0, 3.0))
-    except Exception:
+    except:
         pass
 
     try:
-        logging.info(f"Вызов DeepSeek для {history_key}...")
+        logging.info(f"DeepSeek для {history_key}...")
         resp = deepseek.chat.completions.create(
             model='deepseek-chat',
             messages=messages,
             max_tokens=250,
-            temperature=0.9,
+            temperature=0.85,   # чуть ниже, чтобы не было пафоса
             top_p=0.9,
             frequency_penalty=0.3
         )
         reply = resp.choices[0].message.content.strip()[:500]
-        logging.info(f"DeepSeek ответил для {history_key}: {reply[:50]}...")
+        logging.info(f"Ответ DeepSeek: {reply[:40]}...")
     except Exception as e:
         logging.error(f'Ошибка DeepSeek: {e}')
         reply = "😕 чото не так... давай позже?"
@@ -241,7 +235,7 @@ async def main():
 
     try:
         dialogs = await client.get_dialogs(limit=50)
-        logging.info(f"Загружено {len(dialogs)} диалогов для заполнения кеша.")
+        logging.info(f"Загружено {len(dialogs)} диалогов.")
     except Exception as e:
         logging.error(f"Не удалось загрузить диалоги: {e}")
 
