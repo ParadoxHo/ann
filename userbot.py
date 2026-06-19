@@ -17,12 +17,12 @@ DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY')
 OWNER_ID = int(os.getenv('OWNER_ID'))
 
 if not all([API_ID, API_HASH, SESSION_STRING, DEEPSEEK_API_KEY, OWNER_ID]):
-    raise RuntimeError('Не всі змінні оточення задані на Railway')
+    raise RuntimeError('Не все переменные окружения заданы на Railway')
 
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 deepseek = OpenAI(api_key=DEEPSEEK_API_KEY, base_url='https://api.deepseek.com')
 
-# ----- МАКСИМАЛЬНО НАТУРАЛЬНИЙ ПРОМПТ (без книжності, як у месенджері) -----
+# ----- МАКСИМАЛЬНО НАТУРАЛЬНЫЙ ПРОМПТ -----
 BASE_PROMPT = (
     "Ты — Аня, 28 лет, украинка, живешь в Южном (Одесская область). "
     "Ты патриотка Украины, не любишь россиян из-за войны. "
@@ -31,7 +31,7 @@ BASE_PROMPT = (
     "Не пиши правильно и литературно. Пиши коротко, как в мессенджере: часто без запятых, с разговорными словами, иногда с ошибками. "
     "Не будь слишком вежливой. Не используй сложные обороты. Твои ответы должны звучать так, будто ты просто переписываешься с другом.\n\n"
     "НЕ ПИШИ длинные предложения. НЕ СТАРАЙСЯ формулировать идеально. Иногда отвечай одним словом. Иногда — парой фраз.\n\n"
-    "Примеры твоих ответов (ориентируйся на такой стиль):\n"
+    "Примеры твоих ответов:\n"
     "— 'ну я в южном живу, время киевское'\n"
     "— 'ага, понятно'\n"
     "— 'не, ну это бред какой-то'\n"
@@ -81,30 +81,37 @@ async def should_reply(event):
         return True
     return False
 
+# ----- НОВАЯ ФУНКЦИЯ ЗАДЕРЖКИ (МАКСИМУМ 20 СЕКУНД) -----
 def calculate_reply_delay(msg_len, user_msg_count, is_private):
+    """
+    Возвращает задержку в секундах от 5 до 20 (с учётом длины и знакомства).
+    """
     if is_private and user_msg_count <= 2:
-        base = random.uniform(5.0, 20.0)
-        base += min(10.0, msg_len / 100 * 5)
-        return min(base, 30.0)
+        # Первые сообщения: 5–15 секунд
+        base = random.uniform(5.0, 15.0)
+        # Небольшая добавка за длину (максимум +5 секунд)
+        base += min(5.0, msg_len / 100 * 3)
+        return min(base, 20.0)
     else:
-        base = 30.0
-        length_factor = min(60.0, msg_len / 100 * 20)
-        base += length_factor
+        # Остальные сообщения: 7–20 секунд
+        base = random.uniform(7.0, 15.0)
+        # Добавка за длину (до +5 секунд)
+        base += min(5.0, msg_len / 100 * 3)
+        # Корректировка на знакомство
         if user_msg_count >= 20:
-            base -= 10
+            base -= 2.0
         elif user_msg_count >= 5:
-            base -= 5
+            base -= 1.0
         else:
-            base += 20
+            base += 1.0
+        # Лёгкое влияние времени суток (без сильных скачков)
         hour = datetime.now().hour
         if 23 <= hour or hour <= 6:
-            base += random.uniform(30, 90)
-        elif 8 <= hour <= 11:
-            base += random.uniform(0, 30)
-        else:
-            base += random.uniform(-10, 20)
-        base *= random.uniform(0.7, 1.3)
-        return max(30.0, min(180.0, base))
+            base += random.uniform(0, 3)
+        # Случайный коэффициент, чтобы не было одинаково
+        base *= random.uniform(0.8, 1.2)
+        # Ограничиваем от 5 до 20 секунд
+        return max(5.0, min(20.0, base))
 
 async def send_with_retry(target, message, use_reply, event):
     try:
@@ -144,14 +151,14 @@ async def mark_as_read(event):
 async def stop_bot(event):
     global bot_active
     bot_active = False
-    await event.respond("🤖 Бот остановлен. Для запуска /start.")
+    await event.respond("ладно, пока")
     logging.info("Бот остановлен")
 
 @client.on(events.NewMessage(pattern='/start', from_users=OWNER_ID))
 async def start_bot(event):
     global bot_active
     bot_active = True
-    await event.respond("🤖 Бот запущен.")
+    await event.respond("я тут")
     logging.info("Бот запущен")
 
 @client.on(events.NewMessage(incoming=True))
@@ -223,7 +230,7 @@ async def handler(event):
         logging.info(f"Ответ DeepSeek: {reply[:40]}...")
     except Exception as e:
         logging.error(f'Ошибка DeepSeek: {e}')
-        reply = "😕 чото не так... давай позже?"
+        reply = "чото не так... давай позже?"
 
     add_to_history(history_key, "assistant", reply)
     await send_with_retry(target, reply, use_reply, event)
